@@ -1,12 +1,6 @@
-input:
-  gibberish:
-    length: 80
+input: {}
 
-pipeline:
-  processors:
-  - sleep:
-      duration: 1s
-  - reverse: {}
+pipeline: {}
 
 output:
-  blue_stdout: {}
+  gcp_bigquery_stream: {}
