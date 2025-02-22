@@ -24,6 +24,8 @@ type gcpBigQueryOutputConfig struct {
 	ProjectID       string
 	DatasetID       string
 	TableID         string
+	AllowPartial    bool
+	DiscardUnknown  bool
 	CredentialsJSON string
 }
 
@@ -38,6 +40,12 @@ func gcpBigQueryOutputConfigFromParsed(conf *service.ParsedConfig) (gconf gcpBig
 		return
 	}
 	if gconf.TableID, err = conf.FieldString("table"); err != nil {
+		return
+	}
+	if gconf.AllowPartial, err = conf.FieldBool("allow_partial"); err != nil {
+		return
+	}
+	if gconf.DiscardUnknown, err = conf.FieldBool("discard_unknown"); err != nil {
 		return
 	}
 	if gconf.CredentialsJSON, err = conf.FieldString("credentials_json"); err != nil {
@@ -99,12 +107,11 @@ func gcpBigQueryConfig() *service.ConfigSpec {
 
 By default Redpanda Connect will use a shared credentials file when connecting to GCP services. You can find out more in xref:guides:cloud/gcp.adoc[].
 
-TODO: check formats
-== Format
+This output currently supports only NEWLINE_DELIMITED_JSON format. First json is converted to proto and then send to bigquery.
 
-This output currently supports only CSV, NEWLINE_DELIMITED_JSON and PARQUET, formats. Learn more about how to use GCP BigQuery with them here:
-
-- ` + "https://cloud.google.com/bigquery/docs/loading-data-cloud-storage-json[`NEWLINE_DELIMITED_JSON`^]" + `
+Learn more about how to use GCP BigQuery with them here:
+https://protobuf.dev/programming-guides/json/
+https://cloud.google.com/bigquery/docs/write-api#data_type_conversions
 
 Each message may contain multiple elements separated by newlines. For example a single message containing:
 
@@ -129,9 +136,12 @@ And:
 		Field(service.NewStringField("project").Description("The project ID of the dataset to insert data to. If not set, it will be inferred from the credentials or read from the GOOGLE_CLOUD_PROJECT environment variable.").Default("")).
 		Field(service.NewStringField("dataset").Description("The BigQuery Dataset ID.")).
 		Field(service.NewStringField("table").Description("The table to insert messages to.")).
-		Field(service.NewStringEnumField("format", string(bigquery.JSON), string(bigquery.CSV), string(bigquery.Parquet)).
-			Description("The format of each incoming message.").
-			Default(string(bigquery.JSON))).
+		Field(service.NewBoolField("allow_partial").
+			Description("To allow messages that have missing required fields.").
+			Default(true)).
+		Field(service.NewBoolField("discard_unknown").
+			Description("To ignore unknown fields and enum name values.").
+			Default(true)).
 		Field(service.NewIntField("max_in_flight").
 			Description("The maximum number of message batches to have in flight at a given time. Increase this to improve throughput.").
 			Default(64)). // TODO: Tune this default
@@ -173,6 +183,8 @@ type gcpBigQueryOutput struct {
 	managedStream     *managedwriter.ManagedStream
 	messageDescriptor protoreflect.MessageDescriptor
 
+	umo *protojson.UnmarshalOptions
+
 	log *service.Logger
 }
 
@@ -183,6 +195,10 @@ func newGCPBigQueryOutput(
 	g := &gcpBigQueryOutput{
 		conf: conf,
 		log:  log,
+		umo: &protojson.UnmarshalOptions{
+			AllowPartial:   conf.AllowPartial,
+			DiscardUnknown: conf.DiscardUnknown,
+		},
 	}
 
 	return g, nil
@@ -316,7 +332,7 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 			continue
 		}
 		message := dynamicpb.NewMessage(g.messageDescriptor)
-		if err := protojson.Unmarshal(msgBytes, message); err != nil {
+		if err := g.umo.Unmarshal(msgBytes, message); err != nil {
 			setErr(i, err)
 			continue
 		}
