@@ -276,6 +276,8 @@ func (g *gcpBigQueryOutput) Connect(ctx context.Context) (err error) {
 	g.mwClient = mwClient
 	g.managedStream = ms
 	g.messageDescriptor = md
+
+	g.log.Infof("gcp bigquery managed writer connected - %s.%s.%s\n", client.Project(), g.conf.DatasetID, g.conf.TableID)
 	return nil
 }
 
@@ -310,9 +312,9 @@ func getDescriptor(schema bigquery.Schema) (protoreflect.MessageDescriptor, *des
 
 func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.MessageBatch) error {
 	g.connMut.RLock()
-	client := g.client
+	ms := g.managedStream
 	g.connMut.RUnlock()
-	if client == nil {
+	if ms == nil {
 		return service.ErrNotConnected
 	}
 
@@ -324,6 +326,7 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 		batchErr = batchErr.Failed(idx, err)
 	}
 
+	g.log.Debugf("creating pb messages for batch length %d\n", len(batch))
 	var rows [][]byte
 	for i, msg := range batch {
 		msgBytes, err := msg.AsBytes()
@@ -343,6 +346,7 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 		}
 		rows = append(rows, b)
 	}
+	g.log.Debugf("created %d pb messages, errors: %b\n", len(rows), batchErr != nil)
 
 	if len(rows) == 0 {
 		if batchErr != nil {
@@ -351,7 +355,7 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 		return nil
 	}
 
-	result, err := g.managedStream.AppendRows(ctx, rows)
+	result, err := ms.AppendRows(ctx, rows)
 	if err != nil {
 		return err
 	}
@@ -368,6 +372,7 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 		return batchErr
 	}
 
+	g.log.Debugf("%d rows written\n", len(rows))
 	return nil
 }
 
