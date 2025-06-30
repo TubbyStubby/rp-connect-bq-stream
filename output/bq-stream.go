@@ -4,7 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/googleapis/gax-go/v2/apierror"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"cloud.google.com/go/bigquery"
 	"cloud.google.com/go/bigquery/storage/managedwriter"
@@ -12,6 +18,7 @@ import (
 	"github.com/redpanda-data/benthos/v4/public/service"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
+	"google.golang.org/genproto/googleapis/cloud/bigquery/storage/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -182,6 +189,7 @@ type gcpBigQueryOutput struct {
 
 	managedStream     *managedwriter.ManagedStream
 	messageDescriptor protoreflect.MessageDescriptor
+	descriptorProto   *descriptorpb.DescriptorProto
 
 	umo *protojson.UnmarshalOptions
 
@@ -276,6 +284,7 @@ func (g *gcpBigQueryOutput) Connect(ctx context.Context) (err error) {
 	g.mwClient = mwClient
 	g.managedStream = ms
 	g.messageDescriptor = md
+	g.descriptorProto = dp
 
 	g.log.Infof("gcp bigquery managed writer connected - %s.%s.%s\n", client.Project(), g.conf.DatasetID, g.conf.TableID)
 	return nil
@@ -311,6 +320,13 @@ func getDescriptor(schema bigquery.Schema) (protoreflect.MessageDescriptor, *des
 }
 
 func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.MessageBatch) error {
+	// Try to write the batch, with automatic reconnection on TTL expiration
+	return g.writeBatchWithRetry(ctx, batch, 0)
+}
+
+func (g *gcpBigQueryOutput) writeBatchWithRetry(ctx context.Context, batch service.MessageBatch, retryCount int) error {
+	const maxRetries = 2
+
 	g.connMut.RLock()
 	ms := g.managedStream
 	g.connMut.RUnlock()
@@ -357,11 +373,39 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 
 	result, err := ms.AppendRows(ctx, rows)
 	if err != nil {
+		// Check if this is a connection error that requires reconnection
+		if g.isReconnectableError(err) && retryCount < maxRetries {
+			g.log.Warnf("bigquery stream connection error, attempting to reconnect (attempt %d/%d):", retryCount+1, maxRetries)
+			g.logErrorDetails(err)
+
+			// Attempt to reconnect
+			if reconnectErr := g.reconnect(ctx); reconnectErr != nil {
+				g.log.Errorf("failed to reconnect BigQuery stream: %v", reconnectErr)
+				return fmt.Errorf("connection error reconnect failed: %w", reconnectErr)
+			}
+
+			// Retry the operation
+			return g.writeBatchWithRetry(ctx, batch, retryCount+1)
+		}
 		return err
 	}
 
 	o, err := result.GetResult(ctx)
 	if err != nil {
+		// Check if this is a connection error that requires reconnection
+		if g.isReconnectableError(err) && retryCount < maxRetries {
+			g.log.Warnf("bigquery stream connection error on GetResult, attempting to reconnect (attempt %d/%d):", retryCount+1, maxRetries)
+			g.logErrorDetails(err)
+
+			// Attempt to reconnect
+			if reconnectErr := g.reconnect(ctx); reconnectErr != nil {
+				g.log.Errorf("failed to reconnect BigQuery stream: %v", reconnectErr)
+				return fmt.Errorf("connection error reconnect failed: %w", reconnectErr)
+			}
+
+			// Retry the operation
+			return g.writeBatchWithRetry(ctx, batch, retryCount+1)
+		}
 		return err
 	}
 	if o != managedwriter.NoStreamOffset {
@@ -373,6 +417,115 @@ func (g *gcpBigQueryOutput) WriteBatch(ctx context.Context, batch service.Messag
 	}
 
 	g.log.Debugf("%d rows written\n", len(rows))
+	return nil
+}
+
+// isReconnectableError checks if the error is related to connection issues that can be resolved by reconnecting
+func (g *gcpBigQueryOutput) isReconnectableError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Check for gRPC status codes first
+	if s, ok := status.FromError(err); ok {
+		switch s.Code() {
+		case codes.Aborted:
+			// TTL expiration typically comes with Aborted code
+			return true
+		case codes.Unavailable:
+			// Service unavailable, connection issues, server shutting down
+			return true
+		case codes.Internal:
+			// Internal errors that might be transient connection issues
+			return true
+		case codes.DeadlineExceeded:
+			// Timeout errors that might benefit from reconnection
+			return true
+		}
+	}
+
+	// Check for structured API errors
+	if apiErr, ok := apierror.FromError(err); ok {
+		// Check if it's a retriable error
+		if apiErr.Unwrap() != nil {
+			if s, ok := status.FromError(apiErr.Unwrap()); ok {
+				switch s.Code() {
+				case codes.Aborted, codes.Unavailable, codes.Internal, codes.DeadlineExceeded:
+					return true
+				}
+			}
+		}
+	}
+
+	// Fallback to string matching for specific known patterns
+	errStr := err.Error()
+	if strings.Contains(errStr, "connection TTL") && strings.Contains(errStr, "exceeded") {
+		return true
+	}
+	if strings.Contains(errStr, "server_shutting_down") {
+		return true
+	}
+
+	return false
+}
+
+// logErrorDetails provides detailed logging for structured error information
+func (g *gcpBigQueryOutput) logErrorDetails(err error) {
+	if err == nil {
+		return
+	}
+
+	// Log gRPC status information
+	if s, ok := status.FromError(err); ok {
+		g.log.Errorf("gRPC error - Code: %s, Message: %s", s.Code().String(), s.Message())
+	}
+
+	// Log structured API error information
+	if apiErr, ok := apierror.FromError(err); ok {
+		g.log.Errorf("api error - Reason: %s, Domain: %s", apiErr.Reason(), apiErr.Domain())
+		if apiErr.Unwrap() != nil {
+			g.log.Errorf("wrapped error: %v", apiErr.Unwrap())
+		}
+
+		// Extract BigQuery Storage-specific error details
+		storageErr := &storage.StorageError{}
+		if e := apiErr.Details().ExtractProtoMessage(storageErr); e == nil {
+			g.log.Errorf("storage error - Code: %s, Entity: %s", storageErr.GetCode().String(), storageErr.GetEntity())
+			if storageErr.GetErrorMessage() != "" {
+				g.log.Errorf("storage error message: %s", storageErr.GetErrorMessage())
+			}
+		}
+	}
+}
+
+// reconnect closes the existing stream and creates a new one
+func (g *gcpBigQueryOutput) reconnect(ctx context.Context) error {
+	g.connMut.Lock()
+	defer g.connMut.Unlock()
+
+	// Close existing stream
+	if g.managedStream != nil {
+		g.managedStream.Close()
+		g.managedStream = nil
+	}
+
+	// Add a small delay to avoid rapid reconnection attempts
+	time.Sleep(time.Second)
+
+	// Create new managed stream
+	ms, err := g.mwClient.NewManagedStream(ctx,
+		managedwriter.WithDestinationTable(managedwriter.TableParentFromParts(
+			g.conf.ProjectID, g.conf.DatasetID, g.conf.TableID)),
+		managedwriter.WithType(managedwriter.DefaultStream),
+		managedwriter.WithSchemaDescriptor(g.descriptorProto),
+	)
+	if err != nil {
+		return fmt.Errorf("error creating new BigQuery managed stream: %w", err)
+	}
+
+	g.managedStream = ms
+	g.log.Infof("successfully reconnected BigQuery managed stream - %s.%s.%s", g.client.Project(), g.conf.DatasetID, g.conf.TableID)
+
 	return nil
 }
 
