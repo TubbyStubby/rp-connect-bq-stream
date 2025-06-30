@@ -1,1 +1,27 @@
-benthos-plugin-example
+# Git files
+.git
+.gitignore
+
+# Documentation
+*.md
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build scripts (not needed in container)
+scripts/
+Makefile
+
+# Environment files
+.env
+
+# Log files
+*.log
+
+# Test files
+*_test.go

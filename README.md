@@ -15,7 +15,24 @@ A robust Redpanda Connect plugin that provides high-performance streaming data i
 
 This plugin provides the `gcp_bigquery_stream` output component for Redpanda Connect.
 
-## Build
+## Build and Release
+
+### Quick Start
+
+For development:
+```sh
+make build          # Build locally for testing
+make dry-run        # Preview next release
+```
+
+For releases:
+```sh
+make release-patch  # Release v1.2.3 -> v1.2.4
+make release-minor  # Release v1.2.3 -> v1.3.0
+make release-major  # Release v1.2.3 -> v2.0.0
+```
+
+### Manual Build
 
 Build the custom Redpanda Connect distribution with the BigQuery plugin:
 
@@ -23,11 +40,75 @@ Build the custom Redpanda Connect distribution with the BigQuery plugin:
 go build
 ```
 
-Alternatively, build it as a Docker image:
+Build as a Docker image:
 
 ```sh
-docker build . -t rp-connect-bq-stream
+docker build . -t tubbystubby/rp-connect-bq-stream
 ```
+
+### Automated Build and Release
+
+This project includes automated build and release scripts:
+
+#### Using the Build Script
+
+```sh
+# Interactive mode - choose version increment type
+./scripts/build-and-publish.sh
+
+# Specific version increment types
+./scripts/build-and-publish.sh -t patch   # Bug fixes
+./scripts/build-and-publish.sh -t minor   # New features
+./scripts/build-and-publish.sh -t major   # Breaking changes
+
+# Build locally without publishing
+./scripts/build-and-publish.sh --no-push
+
+# Preview what would happen
+./scripts/build-and-publish.sh --dry-run
+```
+
+#### Using Make Targets
+
+```sh
+make help           # Show all available targets
+make build          # Build locally
+make release-patch  # Automated patch release
+make release-minor  # Automated minor release
+make release-major  # Automated major release
+make clean         # Remove local images
+```
+
+#### Using Convenience Scripts
+
+```sh
+./scripts/build-local.sh     # Local development build
+./scripts/release-patch.sh   # Quick patch release
+./scripts/release-minor.sh   # Quick minor release
+```
+
+### What the Build Script Does
+
+1. **Version Management**: Automatically increments semantic version tags
+2. **Git Integration**: Creates and pushes version tags
+3. **Docker Build**: Builds multi-architecture images with proper labels
+4. **Registry Push**: Publishes to DockerHub with both versioned and `latest` tags
+5. **Source Tracking**: Updates image labels to point to specific commit
+
+### Docker Images
+
+Published images are available at:
+- `tubbystubby/rp-connect-bq-stream:latest` (latest release)
+- `tubbystubby/rp-connect-bq-stream:vX.Y.Z` (specific versions)
+
+### Prerequisites for Building
+
+- Docker installed and running
+- Git repository with proper remote setup
+- DockerHub login (`docker login`) for publishing
+- Go 1.23+ for manual builds
+
+For detailed build documentation, see [BUILD.md](BUILD.md).
 
 ## Configuration
 

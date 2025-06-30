@@ -1,2 +1,26 @@
-benthos-plugin-example
-redpanda-connect-plugin-example
+# Build artifacts
+/rp-connect-bq-stream
+/connect
+
+# Go build files
+*.exe
+*.dll
+*.so
+*.out
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+
+# Log files
+*.log
+
+# Test coverage
+coverage.out
