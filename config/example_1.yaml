@@ -1,6 +1,47 @@
-input: {}
+# BigQuery Streaming Example Configuration
+# This example demonstrates streaming JSON data to BigQuery using the Storage Write API
 
-pipeline: {}
+input:
+  stdin: {}
+  # Alternative input examples:
+  # kafka:
+  #   addresses: ["localhost:9092"]
+  #   topics: ["events"]
+  # http_server:
+  #   path: /webhook
+  #   allowed_verbs: ["POST"]
+
+pipeline:
+  processors:
+    # Add timestamp to each message
+    - bloblang: |
+        root = this
+        root.ingested_at = timestamp_unix()
+        root.message_id = uuid_v4()
 
 output:
-  gcp_bigquery_stream: {}
+  gcp_bigquery_stream:
+    # GCP Configuration
+    project: "" # Leave empty to auto-detect from credentials
+    dataset: "streaming_data" # Your BigQuery dataset
+    table: "events" # Your BigQuery table
+
+    # Data Processing Options
+    allow_partial: true # Allow messages with missing required fields
+    discard_unknown: true # Ignore fields not in the table schema
+
+    # Performance Configuration
+    max_in_flight: 64 # Maximum concurrent batches
+
+    # Credentials (optional - uses ADC if not specified)
+    credentials_json: "" # Set to your service account JSON or use environment variable
+
+    # Batching Configuration
+    batching:
+      count: 100 # Number of messages per batch
+      period: "5s" # Maximum time to wait for a batch
+      byte_size: 1048576 # Maximum batch size in bytes (1MB)
+
+# Example JSON messages to stream:
+# {"user_id": "12345", "event": "page_view", "timestamp": "2024-01-15T10:30:00Z"}
+# {"user_id": "67890", "event": "button_click", "timestamp": "2024-01-15T10:31:00Z"}

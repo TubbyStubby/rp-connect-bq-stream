@@ -1,0 +1,86 @@
+# Development Configuration for Local Testing
+# This configuration is designed for local development and testing of the BigQuery streaming plugin
+
+# Simple stdin input for testing with manual JSON input
+input:
+  stdin: {}
+
+# Minimal processing for development
+pipeline:
+  processors:
+    # Add development metadata
+    - bloblang: |
+        root = this
+        root.dev_processed_at = now().format_timestamp("2006-01-02T15:04:05Z07:00")
+        root.dev_environment = "local"
+
+        # Ensure we have a timestamp field
+        if !this.exists("timestamp") {
+          root.timestamp = now().format_timestamp("2006-01-02T15:04:05Z07:00")
+        }
+
+# BigQuery output configuration for development
+output:
+  gcp_bigquery_stream:
+    # Use environment variables or set directly for testing
+    project: "my-dev-project" # Replace with your dev project
+    dataset: "dev_testing" # Replace with your dev dataset
+    table: "test_events" # Replace with your test table
+
+    # Permissive settings for development
+    allow_partial: true
+    discard_unknown: true
+
+    # Lower batch sizes for development/testing
+    max_in_flight: 8
+
+    # Batching optimized for development (smaller, faster batches)
+    batching:
+      count: 10 # Small batches for quick feedback
+      period: "2s" # Quick processing
+      byte_size: 65536 # 64KB limit
+
+    # Use default credentials (ADC) - run `gcloud auth application-default login`
+    credentials_json: ""
+
+# Verbose logging for development
+logger:
+  level: DEBUG
+  format: logfmt
+  add_timestamp: true
+
+# Enable HTTP endpoints for development monitoring
+http:
+  enabled: true
+  address: "127.0.0.1:4195"
+  root_path: "/benthos"
+  debug_endpoints: true
+
+# Quick shutdown for development
+shutdown_timeout: "5s"
+# Development usage:
+# 1. Set up your BigQuery dev environment:
+#    - Create a test project, dataset, and table
+#    - Run: gcloud auth application-default login
+#
+# 2. Update the project, dataset, and table names above
+#
+# 3. Run the application:
+#    ./rp-connect-bq-stream -c config/development.yaml
+#
+# 4. Test with sample JSON data:
+#    echo '{"user_id": 123, "event": "test", "message": "hello world"}' | ./rp-connect-bq-stream -c config/development.yaml
+#
+# 5. Monitor via HTTP endpoints:
+#    curl http://127.0.0.1:4195/benthos/stats
+#    curl http://127.0.0.1:4195/benthos/ping
+#
+# Example BigQuery test table schema:
+# CREATE TABLE `my-dev-project.dev_testing.test_events` (
+#   timestamp TIMESTAMP,
+#   user_id INTEGER,
+#   event STRING,
+#   message STRING,
+#   dev_processed_at TIMESTAMP,
+#   dev_environment STRING
+# );
